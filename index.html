@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TF3_calc — Transport Fever 3 supply chain calculator</title>
+<style>
+  :root {
+    --bg: #ebe7de;
+    --panel: #ffffff;
+    --ink: #2b2a26;
+    --muted: #847d6d;
+    --line: #e0d9cb;
+    --accent: #b24c2e;
+    --accent-soft: #f6e8e2;
+    --tier1: #2f6b46;
+    --tier1-soft: #e4f0e8;
+    --tier2: #a8721f;
+    --tier2-soft: #f6eddc;
+    --tier3: #b24c2e;
+    --tier3-soft: #f6e8e2;
+    --shadow: 0 1px 2px rgba(43, 42, 38, .06), 0 8px 24px rgba(43, 42, 38, .07);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 400px at 50% -100px, #f7f3ea 60%, transparent),
+      var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    background: linear-gradient(135deg, #262521 0%, #3a352d 55%, #4a3b2f 100%);
+    color: #f6f3ec;
+    padding: 30px 24px 26px;
+  }
+  header .inner { max-width: 1000px; margin: 0 auto; }
+  header h1 {
+    margin: 0;
+    font-size: 30px;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+  }
+  header h1 .thin { font-weight: 300; opacity: .85; }
+  header p { margin: 8px 0 0; color: #cfc7b6; font-size: 14px; max-width: 640px; }
+  .chips { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(255, 255, 255, .12);
+    border: 1px solid rgba(255, 255, 255, .16);
+    color: #efe9dc;
+    border-radius: 999px; padding: 3px 11px; font-size: 12px;
+  }
+  main { max-width: 1000px; margin: 26px auto 10px; padding: 0 16px; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px 24px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+  }
+  .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .sec-head .step {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; border-radius: 8px;
+    background: var(--accent); color: #fff;
+    font-size: 13px; font-weight: 700; flex: none;
+  }
+  h2 { margin: 0; font-size: 17px; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; font-weight: 600; letter-spacing: .2px; }
+  input[type="number"], select {
+    font: inherit; padding: 9px 11px;
+    border: 1px solid var(--line); border-radius: 8px; background: #fff;
+    outline: none;
+  }
+  input[type="number"]:focus, select:focus { border-color: var(--accent); }
+  input[type="number"] { width: 150px; }
+  button {
+    font: inherit; font-weight: 600;
+    background: var(--accent); color: #fff;
+    border: 0; border-radius: 8px; padding: 11px 22px; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(178, 76, 46, .28);
+  }
+  button:hover { filter: brightness(1.07); }
+  .choices { display: grid; gap: 12px; margin-top: 16px; }
+  .choice {
+    background: var(--accent-soft);
+    border: 1px solid #ecd7cd;
+    border-radius: 10px; padding: 12px 14px;
+    font-size: 14px;
+  }
+  .choice .opts { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 14px; }
+  .choice label.inline {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin: 0; color: var(--ink); font-size: 14px; cursor: pointer; font-weight: 400;
+  }
+
+  /* result summary */
+  .plan-summary {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    background: linear-gradient(120deg, #f9f5ec, #f3ede1);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 18px;
+  }
+  .plan-summary .big {
+    font-size: 26px; font-weight: 700; line-height: 1.15;
+  }
+  .plan-summary .big span { color: var(--accent); }
+  .plan-summary .side { color: var(--muted); font-size: 13px; }
+
+  /* tier cards */
+  .tier {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 16px;
+    background: #fff;
+  }
+  .tier-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tier-head .dot {
+    width: 12px; height: 12px; border-radius: 50%; flex: none;
+    box-shadow: 0 0 0 4px rgba(0,0,0,.05);
+  }
+  .tier-head .title { font-weight: 700; font-size: 15px; }
+  .tier-head .hint { color: var(--muted); font-size: 12.5px; }
+  .tier-head .count {
+    margin-left: auto;
+    font-size: 11px; font-weight: 700; letter-spacing: .4px;
+    border-radius: 999px; padding: 3px 10px; text-transform: uppercase;
+  }
+  .tier-1 .tier-head { background: var(--tier1-soft); }
+  .tier-1 .dot, .tier-1 .count { background: var(--tier1); color: #fff; }
+  .tier-1 .count { background: rgba(47, 107, 70, .15); color: var(--tier1); }
+  .tier-2 .tier-head { background: var(--tier2-soft); }
+  .tier-2 .dot { background: var(--tier2); }
+  .tier-2 .count { background: rgba(168, 114, 31, .15); color: var(--tier2); }
+  .tier-3 .tier-head { background: var(--tier3-soft); }
+  .tier-3 .dot { background: var(--tier3); }
+  .tier-3 .count { background: rgba(178, 76, 46, .15); color: var(--tier3); }
+  .tier table { margin: 0; }
+  .tier thead th { background: #faf8f3; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left; padding: 9px 16px;
+    border-bottom: 1px solid var(--line); font-size: 14px;
+  }
+  th {
+    color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .5px; font-weight: 700;
+  }
+  td.num, th.num { text-align: right; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: #faf7f1; }
+  tr.delivery td { font-weight: 600; background: #fcf9f3; }
+  .cargo-cell { display: flex; align-items: center; gap: 8px; }
+  .cat {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .3px;
+    background: #efeae0; color: var(--muted);
+    text-transform: uppercase; flex: none;
+  }
+  .arrow { color: var(--muted); font-size: 12px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .tag {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 11px; background: var(--accent-soft); color: var(--accent);
+    margin-right: 4px;
+  }
+
+  /* surplus */
+  .surplus {
+    border: 1px dashed #cfc6b4;
+    border-radius: 12px;
+    background: #fbf9f4;
+  }
+  .surplus .tier-head { background: transparent; border-bottom: 1px dashed #d9d0be; }
+  .surplus .dot { background: var(--muted); }
+  .surplus .count { background: #eee8db; color: var(--muted); }
+
+  details { margin-top: 8px; }
+  summary {
+    cursor: pointer; font-weight: 600; padding: 6px 0;
+    list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--accent); }
+  details[open] summary::before { content: "▾ "; }
+  .recipe-list { margin: 10px 0 0; padding: 0; list-style: none; }
+  .recipe-list li { padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+  .recipe-list b { display: inline-block; min-width: 150px; }
+  .error { color: var(--accent); font-weight: 600; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 14px 0 30px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <h1>TF3_calc <span class="thin">— supply chain calculator</span></h1>
+    <p>Enter what a town demands, pick the recipe where chains fork, and get the exact rate to ship on every line. Rates are items per game year (365 days).</p>
+    <div class="chips">
+      <span class="chip">36 cargos</span>
+      <span class="chip">32 industries</span>
+      <span class="chip">Official wiki ratios</span>
+      <span class="chip">Works offline</span>
+    </div>
+  </div>
+</header>
+<main>
+  <section>
+    <div class="sec-head"><span class="step">1</span><h2>Town demand</h2></div>
+    <div class="row">
+      <div>
+        <label for="cargo">Cargo to deliver</label>
+        <select id="cargo"></select>
+      </div>
+      <div>
+        <label for="rate">Demand</label>
+        <input type="number" id="rate" min="0" step="any" value="100">
+      </div>
+      <div>
+        <label for="unit">Unit</label>
+        <select id="unit">
+          <option value="year">items / year</option>
+          <option value="day">items / day</option>
+        </select>
+      </div>
+      <button id="calc">Calculate</button>
+    </div>
+    <div id="choices" class="choices"></div>
+  </section>
+
+  <section id="result" hidden>
+    <div class="sec-head"><span class="step">2</span><h2>Lines to ship</h2></div>
+    <div class="plan-summary" id="plan-summary"></div>
+    <div id="tiers"></div>
+    <div id="surplus-block" hidden>
+      <div class="tier surplus">
+        <div class="tier-head">
+          <span class="dot"></span>
+          <span class="title">Surplus byproducts</span>
+          <span class="hint">Find a consumer or it is destroyed past the stock limit</span>
+          <span class="count" id="surplus-count"></span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>From</th><th>Cargo</th><th class="num">Rate /year</th><th class="num">Rate /day</th></tr>
+          </thead>
+          <tbody id="surplus"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="notes" class="muted" style="margin-top:12px"></div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="step">3</span><h2>Reference</h2></div>
+    <details>
+      <summary>All industries and recipes</summary>
+      <ul class="recipe-list" id="recipes"></ul>
+    </details>
+    <details>
+      <summary>All cargos</summary>
+      <ul class="recipe-list" id="cargos"></ul>
+    </details>
+    <details>
+      <summary>About the numbers</summary>
+      <p class="muted">Recipe ratios come from the official Transport Fever 3 wiki (industries and cargos page).
+      Processor recipes are exact input&rarr;output ratios per production cycle. Raw industries output a
+      plot-dependent range per year; the line rates you see are what you must ship to feed the chain at your
+      chosen demand. Coupled byproducts (e.g. Steel Mill's steel, Livestock Farm's wool) are netted against
+      demand in the chain and shown as surplus when nobody consumes them.</p>
+      <p class="muted"><b>Primary</b> lines carry raw materials, <b>secondary</b> lines carry intermediate
+      products between factories, and <b>third</b> lines deliver the end product to the town.</p>
+    </details>
+  </section>
+</main>
+<footer>Data: official TF3 wiki &middot; offline page, no server needed</footer>
+
+<script>
+"use strict";
+
+/* ---------------- data (from the official TF3 wiki) ---------------- */
+
+const CARGO = {
+  beverages: {name:"Beverages", category:"Goods", klass:"End"},
+  books: {name:"Books", category:"Goods", klass:"End"},
+  bricks: {name:"Bricks", category:"Goods", klass:"End"},
+  canned_food: {name:"Canned Food", category:"Goods", klass:"End"},
+  cement: {name:"Cement", category:"Bulk", klass:"End"},
+  chemicals: {name:"Chemicals", category:"Liquid", klass:"Intermediate"},
+  clay: {name:"Clay", category:"Bulk", klass:"Raw"},
+  clothes: {name:"Clothes", category:"Goods", klass:"End"},
+  coal: {name:"Coal", category:"Bulk", klass:"Raw"},
+  crude_oil: {name:"Crude Oil", category:"Liquid", klass:"Raw"},
+  dyes: {name:"Dyes", category:"Liquid", klass:"Intermediate"},
+  fabric: {name:"Fabric", category:"Goods", klass:"Intermediate"},
+  fertilizer: {name:"Fertilizer", category:"Bulk", klass:"Booster"},
+  fish: {name:"Fish", category:"Goods", klass:"Raw"},
+  fuel: {name:"Fuel", category:"Liquid", klass:"End"},
+  furniture: {name:"Furniture", category:"Goods", klass:"End"},
+  glass: {name:"Glass", category:"Goods", klass:"Intermediate"},
+  grain: {name:"Grain", category:"Bulk", klass:"Raw"},
+  iron_ore: {name:"Iron Ore", category:"Bulk", klass:"Raw"},
+  logs: {name:"Logs", category:"Flatbed", klass:"Raw"},
+  machines: {name:"Machines", category:"Flatbed", klass:"Booster"},
+  meat: {name:"Meat", category:"Goods", klass:"Raw"},
+  paper: {name:"Paper", category:"Goods", klass:"Intermediate"},
+  planks: {name:"Planks", category:"Flatbed", klass:"Intermediate"},
+  plastic: {name:"Plastic", category:"Goods", klass:"Intermediate"},
+  rubber: {name:"Rubber", category:"Liquid", klass:"Raw"},
+  sand: {name:"Sand", category:"Bulk", klass:"Raw"},
+  sawdust: {name:"Sawdust", category:"Bulk", klass:"Intermediate"},
+  sheet_metal: {name:"Sheet Metal", category:"Flatbed", klass:"Intermediate"},
+  steel: {name:"Steel", category:"Flatbed", klass:"Intermediate"},
+  stone: {name:"Stone", category:"Bulk", klass:"Raw"},
+  tires: {name:"Tires", category:"Goods", klass:"Intermediate"},
+  tools: {name:"Tools", category:"Goods", klass:"Booster"},
+  vegetables: {name:"Vegetables", category:"Goods", klass:"End"},
+  vehicles: {name:"Vehicles", category:"Flatbed", klass:"End"},
+  wool: {name:"Wool", category:"Goods", klass:"Raw"},
+};
+
+const INDUSTRY = {
+  brewery: {name:"Brewery", kind:"processor", recipes:[{inputs:{grain:8, glass:3}, outputs:{beverages:8}}]},
+  brick_works: {name:"Brick Works", kind:"processor", recipes:[{inputs:{clay:4}, outputs:{bricks:4}}]},
+  canning_factory: {name:"Canning Factory", kind:"processor", supports_split:true, recipes:[
+    {inputs:{fish:2, sheet_metal:1}, outputs:{canned_food:2}, label:"Fish"},
+    {inputs:{meat:2, sheet_metal:1}, outputs:{canned_food:2}, label:"Meat"},
+  ]},
+  cement_plant: {name:"Cement Plant", kind:"processor", recipes:[{inputs:{stone:4}, outputs:{cement:2}}]},
+  chemical_plant: {name:"Chemical Plant", kind:"processor", recipes:[{inputs:{chemicals:6}, outputs:{dyes:2, plastic:5}}]},
+  clay_pit: {name:"Clay Pit", kind:"raw", outputs:{clay:[1,8,16]}, booster:"tools"},
+  coal_mine: {name:"Coal Mine", kind:"raw", outputs:{coal:[1,8,16]}, booster:"tools"},
+  cotton_farm: {name:"Cotton Farm", kind:"raw", outputs:{wool:[1,6,12]}, booster:"fertilizer"},
+  crop_farm: {name:"Crop Farm", kind:"raw", outputs:{grain:[1,12,24], vegetables:[1,8,16]}, booster:"fertilizer"},
+  fishing_grounds: {name:"Fishing Grounds", kind:"raw", outputs:{fish:[1,6,12]}, booster:"tools"},
+  furniture_factory: {name:"Furniture Factory", kind:"processor", recipes:[{inputs:{planks:4, glass:1}, outputs:{furniture:2}}], booster:"machines"},
+  glass_works: {name:"Glass Works", kind:"processor", recipes:[{inputs:{sand:4}, outputs:{glass:2}}]},
+  iron_ore_mine: {name:"Iron Ore Mine", kind:"raw", outputs:{iron_ore:[1,8,16]}},
+  livestock_farm: {name:"Livestock Farm", kind:"processor", recipes:[{inputs:{grain:7}, outputs:{meat:3, wool:4}}], booster:"machines"},
+  logging_camp: {name:"Logging Camp", kind:"raw", outputs:{logs:[1,4,8]}},
+  machine_factory: {name:"Machine Factory", kind:"processor", recipes:[{inputs:{steel:7, plastic:4}, outputs:{machines:7}}]},
+  oil_platform: {name:"Oil Platform", kind:"raw", outputs:{crude_oil:[1,2,4]}, booster:"tools"},
+  oil_refinery: {name:"Oil Refinery", kind:"processor", recipes:[{inputs:{crude_oil:4}, outputs:{fuel:2, fertilizer:1, chemicals:4}}]},
+  oil_well: {name:"Oil Well", kind:"raw", outputs:{crude_oil:[1,3,6]}, booster:"machines"},
+  paper_mill: {name:"Paper Mill", kind:"processor", recipes:[{inputs:{sawdust:4}, outputs:{paper:2}}]},
+  printing_press: {name:"Printing Press", kind:"processor", recipes:[{inputs:{paper:4, dyes:2}, outputs:{books:4}}]},
+  quarry: {name:"Quarry", kind:"raw", outputs:{stone:[1,8,16]}, booster:"tools"},
+  rubber_farm: {name:"Rubber Farm", kind:"raw", outputs:{rubber:[1,16,32]}, booster:"fertilizer"},
+  sand_excavator: {name:"Sand Excavator", kind:"raw", outputs:{sand:[1,4,8]}, booster:"machines"},
+  sand_pit: {name:"Sand Pit", kind:"raw", outputs:{sand:[1,4,8]}, booster:"tools"},
+  saw_mill: {name:"Saw Mill", kind:"processor", recipes:[{inputs:{logs:4}, outputs:{sawdust:4, planks:8}}]},
+  steel_mill: {name:"Steel Mill", kind:"processor", recipes:[{inputs:{iron_ore:6, coal:6}, outputs:{sheet_metal:4, steel:3}}]},
+  textile_factory: {name:"Textile Factory", kind:"processor", recipes:[{inputs:{fabric:4, dyes:2}, outputs:{clothes:3}}]},
+  tire_factory: {name:"Tire Factory", kind:"processor", recipes:[{inputs:{rubber:4}, outputs:{tires:2}}]},
+  tool_factory: {name:"Tool Factory", kind:"processor", recipes:[{inputs:{planks:4, plastic:2}, outputs:{tools:5}}]},
+  vehicle_factory: {name:"Vehicle Factory", kind:"processor", recipes:[{inputs:{tires:1, sheet_metal:4, machines:1}, outputs:{vehicles:1}}]},
+  weaving_mill: {name:"Weaving Mill", kind:"processor", recipes:[{inputs:{wool:4}, outputs:{fabric:4}}]},
+};
+
+/* ---------------- helpers ---------------- */
+
+const EPS = 1e-9;
+const DAYS_PER_YEAR = 365;
+
+function producersOf(cargoId) {
+  const out = [];
+  for (const [indId, ind] of Object.entries(INDUSTRY)) {
+    if (ind.kind === "raw") {
+      if (cargoId in ind.outputs) out.push(indId);
+    } else {
+      for (const r of ind.recipes) {
+        if (cargoId in r.outputs) { out.push(indId); break; }
+      }
+    }
+  }
+  return out.sort();
+}
+
+function nameOf(node) { return node === "town" ? "Town" : INDUSTRY[node].name; }
+function fmtRate(n) {
+  return Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : n.toFixed(1);
+}
+function fmtDay(n) { return (n / DAYS_PER_YEAR).toFixed(2); }
+
+/* ---------------- discovery: which choices are needed ---------------- */
+
+function discoverChoices(targetCargo) {
+  const producerQs = new Set();
+  const splitQs = new Set();
+  const seenC = new Set();
+  const seenI = new Set();
+  const queue = [targetCargo];
+  while (queue.length) {
+    const c = queue.pop();
+    if (seenC.has(c)) continue;
+    seenC.add(c);
+    const opts = producersOf(c);
+    if (opts.length > 1) producerQs.add(c);
+    for (const indId of opts) {
+      if (seenI.has(indId)) continue;
+      seenI.add(indId);
+      const ind = INDUSTRY[indId];
+      if (ind.kind !== "processor") continue;
+      if (ind.supports_split) splitQs.add(indId);
+      for (const r of ind.recipes) {
+        for (const inc of Object.keys(r.inputs)) queue.push(inc);
+      }
+    }
+  }
+  return { producerQs: [...producerQs].sort(), splitQs: [...splitQs].sort() };
+}
+
+/* ---------------- the plan engine ----------------
+   choices = {
+     producer: { cargoId: indId },
+     split:    { indId: [[recipeIndex, share], ...] },   // shares sum to 1
+   }
+--------------------------------------------------- */
+
+function computePlan(targetCargo, targetRate, choices) {
+  const producerPick = (choices && choices.producer) || {};
+  const splitPick = (choices && choices.split) || {};
+
+  // discovery with resolved choices (walks only the chosen branches)
+  const producers = {};
+  const mixes = {};
+  const seen = new Set();
+  const queue = [targetCargo];
+  while (queue.length) {
+    const c = queue.pop();
+    if (seen.has(c)) continue;
+    seen.add(c);
+    const opts = producersOf(c);
+    if (!opts.length) throw new Error("No industry produces " + CARGO[c].name);
+    const indId = opts.length === 1 ? opts[0] : (producerPick[c] || opts[0]);
+    if (opts.length > 1 && !producerPick[c]) {
+      throw new Error("Producer choice needed for " + CARGO[c].name);
+    }
+    producers[c] = indId;
+    const ind = INDUSTRY[indId];
+    if (ind.kind === "raw") continue;
+    if (!(indId in mixes)) {
+      if (ind.supports_split) {
+        const mix = splitPick[indId];
+        if (!mix) throw new Error("Recipe choice needed for " + ind.name);
+        mixes[indId] = mix;
+      } else {
+        mixes[indId] = [[0, 1.0]];
+      }
+    }
+    for (const [i, share] of mixes[indId]) {
+      if (share <= 0) continue;
+      for (const inc of Object.keys(ind.recipes[i].inputs)) queue.push(inc);
+    }
+  }
+
+  const industries = new Set(Object.keys(mixes));
+  for (const c of seen) industries.add(producers[c]);
+
+  // topological order: consumers before the producers of their inputs
+  const indegree = {};
+  const dependents = {};
+  for (const id of industries) { indegree[id] = 0; dependents[id] = new Set(); }
+  for (const [indId, mix] of Object.entries(mixes)) {
+    const ind = INDUSTRY[indId];
+    const ins = new Set();
+    for (const [i, share] of mix) {
+      if (share > 0) for (const inc of Object.keys(ind.recipes[i].inputs)) ins.add(inc);
+    }
+    for (const inc of ins) {
+      const prod = producers[inc];
+      if (prod === indId || dependents[indId].has(prod)) continue;
+      dependents[indId].add(prod);
+      indegree[prod] += 1;
+    }
+  }
+  const ready = [...industries].filter(i => indegree[i] === 0).sort();
+  const order = [];
+  while (ready.length) {
+    const id = ready.shift();
+    order.push(id);
+    for (const dep of [...dependents[id]].sort()) {
+      indegree[dep] -= 1;
+      if (indegree[dep] === 0) {
+        ready.push(dep);
+        ready.sort();
+      }
+    }
+  }
+  if (order.length !== industries.size) throw new Error("Cycle detected in production chain");
+
+  const inRate = (ind, mix, cargo) =>
+    mix.reduce((s, [i, share]) => s + share * (ind.recipes[i].inputs[cargo] || 0), 0);
+  const outRate = (ind, mix, cargo) =>
+    mix.reduce((s, [i, share]) => s + share * (ind.recipes[i].outputs[cargo] || 0), 0);
+
+  const inputsOf = (ind, mix) => {
+    const set = new Set();
+    for (const [i, share] of mix) {
+      if (share > 0) for (const k of Object.keys(ind.recipes[i].inputs)) set.add(k);
+    }
+    return set;
+  };
+  const outputsOf = (ind, mix) => {
+    const set = new Set();
+    for (const [i, share] of mix) {
+      if (share > 0) for (const k of Object.keys(ind.recipes[i].outputs)) set.add(k);
+    }
+    return set;
+  };
+
+  const demand = {};
+  demand[targetCargo] = targetRate;
+  const lines = [];
+  const surplus = [];
+  const notes = [];
+
+  for (const indId of order) {
+    const ind = INDUSTRY[indId];
+    if (ind.kind === "raw") continue;
+    const mix = mixes[indId];
+
+    let cycles = 0;
+    for (const outC of outputsOf(ind, mix)) {
+      const per = outRate(ind, mix, outC);
+      if (per > 0 && (demand[outC] || 0) > 0) {
+        cycles = Math.max(cycles, demand[outC] / per);
+      }
+    }
+
+    for (const outC of [...outputsOf(ind, mix)].sort()) {
+      const produced = outRate(ind, mix, outC) * cycles;
+      const leftover = produced - (demand[outC] || 0);
+      if (leftover > EPS) surplus.push({ src: indId, cargo: outC, rate: leftover });
+    }
+
+    for (const inc of [...inputsOf(ind, mix)].sort()) {
+      const rate = inRate(ind, mix, inc) * cycles;
+      if (rate <= EPS) continue;
+      lines.push({ src: producers[inc], dst: indId, cargo: inc, rate });
+      demand[inc] = (demand[inc] || 0) + rate;
+    }
+  }
+
+  lines.push({ src: producers[targetCargo], dst: "town", cargo: targetCargo, rate: targetRate });
+
+  for (const indId of [...industries].sort()) {
+    const ind = INDUSTRY[indId];
+    if (ind.kind !== "raw") continue;
+    for (const [outC, range] of Object.entries(ind.outputs)) {
+      if ((demand[outC] || 0) <= EPS) {
+        notes.push(`${ind.name} also yields ${CARGO[outC].name} at ${range[0]}-${range[2]}/year (plot-dependent)`);
+      }
+    }
+  }
+
+  lines.sort((a, b) =>
+    (a.dst !== "town" ? 1 : 0) - (b.dst !== "town" ? 1 : 0) ||
+    CARGO[a.cargo].name.localeCompare(CARGO[b.cargo].name) ||
+    a.src.localeCompare(b.src));
+  surplus.sort((a, b) => CARGO[a.cargo].name.localeCompare(CARGO[b.cargo].name));
+
+  return { targetCargo, targetRate, lines, surplus, notes };
+}
+
+/* ---------------- tier grouping (display) ----------------
+   Primary   = raw material lines (e.g. wool for clothes)
+   Secondary = intermediate goods between factories (e.g. dyes for clothes)
+   Third     = end product delivered to the town (e.g. clothes)
+---------------------------------------------------------- */
+
+const TIERS = [
+  { key: "primary",   cls: "tier-1", title: "Primary",
+    hint: "Raw materials picked up from the map" },
+  { key: "secondary", cls: "tier-2", title: "Secondary",
+    hint: "Intermediate goods shipped between factories" },
+  { key: "third",     cls: "tier-3", title: "Third",
+    hint: "End product delivered to the town" },
+];
+
+function tierOf(cargoId) {
+  const k = CARGO[cargoId].klass;
+  if (k === "Raw") return 0;
+  if (k === "End") return 2;
+  return 1; // Intermediate + Booster
+}
+
+function groupLines(lines) {
+  const groups = [[], [], []];
+  for (const f of lines) groups[tierOf(f.cargo)].push(f);
+  return groups;
+}
+
+/* ---------------- UI ---------------- */
+
+const el = id => document.getElementById(id);
+
+function fillCargoSelect() {
+  const order = { End: 0, Intermediate: 1, Raw: 2, Booster: 3 };
+  const ids = Object.keys(CARGO).sort((a, b) =>
+    order[CARGO[a].klass] - order[CARGO[b].klass] ||
+    CARGO[a].name.localeCompare(CARGO[b].name));
+  const groups = { End: [], Intermediate: [], Raw: [], Booster: [] };
+  for (const id of ids) groups[CARGO[id].klass].push(id);
+  const sel = el("cargo");
+  for (const [klass, label] of [["End", "End products"], ["Intermediate", "Intermediate"], ["Raw", "Raw materials"], ["Booster", "Booster products"]]) {
+    const og = document.createElement("optgroup");
+    og.label = label;
+    for (const id of groups[klass]) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = CARGO[id].name;
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+  sel.value = "meat";
+}
+
+function recalcIfVisible() {
+  if (!el("result").hidden) calculate();
+}
+
+function renderChoices(targetCargo) {
+  const box = el("choices");
+  box.innerHTML = "";
+  const { producerQs, splitQs } = discoverChoices(targetCargo);
+
+  for (const cargoId of producerQs) {
+    const wrap = document.createElement("div");
+    wrap.className = "choice";
+    const opts = producersOf(cargoId).map((indId, i) =>
+      `<label class="inline"><input type="radio" name="prod_${cargoId}" value="${indId}" ${i === 0 ? "checked" : ""}> ${INDUSTRY[indId].name}</label>`
+    ).join("");
+    wrap.innerHTML = `<div>Which industry provides <b>${CARGO[cargoId].name}</b>?</div><div class="opts">${opts}</div>`;
+    box.appendChild(wrap);
+    wrap.querySelectorAll(`input[name="prod_${cargoId}"]`).forEach(radio => {
+      radio.addEventListener("change", recalcIfVisible);
+    });
+  }
+
+  for (const indId of splitQs) {
+    const ind = INDUSTRY[indId];
+    const wrap = document.createElement("div");
+    wrap.className = "choice";
+    const labels = ind.recipes.map((r, i) => r.label || ("Recipe " + (i + 1)));
+    const radios = labels.map((lb, i) =>
+      `<label class="inline"><input type="radio" name="split_${indId}" value="${i}" ${i === 0 ? "checked" : ""}> ${lb} only</label>`
+    ).join("");
+    wrap.innerHTML = `
+      <div><b>${ind.name}</b> recipe (inputs are alternatives):</div>
+      <div class="opts">
+        ${radios}
+        <label class="inline"><input type="radio" name="split_${indId}" value="mix"> Mix</label>
+        <label class="inline" id="share_label_${indId}" hidden>
+          ${labels[0]} share: <input type="number" id="share_${indId}" min="0" max="100" step="5" value="50" style="width:80px"> %
+        </label>
+      </div>`;
+    box.appendChild(wrap);
+    wrap.querySelectorAll(`input[name="split_${indId}"]`).forEach(radio => {
+      radio.addEventListener("change", () => {
+        el(`share_label_${indId}`).hidden = radio.value !== "mix";
+        recalcIfVisible();
+      });
+    });
+    wrap.querySelector(`#share_${indId}`).addEventListener("input", recalcIfVisible);
+  }
+}
+
+function readChoices(targetCargo) {
+  const { producerQs, splitQs } = discoverChoices(targetCargo);
+  const choices = { producer: {}, split: {} };
+  for (const cargoId of producerQs) {
+    const picked = document.querySelector(`input[name="prod_${cargoId}"]:checked`);
+    choices.producer[cargoId] = picked ? picked.value : producersOf(cargoId)[0];
+  }
+  for (const indId of splitQs) {
+    const picked = document.querySelector(`input[name="split_${indId}"]:checked`);
+    const val = picked ? picked.value : "0";
+    if (val === "mix") {
+      let share = Number(el(`share_${indId}`).value) / 100;
+      share = Math.min(1, Math.max(0, share));
+      if (share <= 0) choices.split[indId] = [[1, 1.0]];
+      else if (share >= 1) choices.split[indId] = [[0, 1.0]];
+      else choices.split[indId] = [[0, share], [1, 1.0 - share]];
+    } else {
+      choices.split[indId] = [[Number(val), 1.0]];
+    }
+  }
+  return choices;
+}
+
+function lineRow(f) {
+  const isDelivery = f.dst === "town";
+  return `
+    <tr class="${isDelivery ? "delivery" : ""}">
+      <td>${nameOf(f.src)}</td>
+      <td class="arrow">${isDelivery ? "→" : "→"}</td>
+      <td>${nameOf(f.dst)}</td>
+      <td><span class="cargo-cell"><span class="cat">${CARGO[f.cargo].category}</span>${CARGO[f.cargo].name}</span></td>
+      <td class="num">${fmtRate(f.rate)}</td>
+      <td class="num">${fmtDay(f.rate)}</td>
+    </tr>`;
+}
+
+function renderPlan(plan) {
+  el("plan-summary").innerHTML = `
+    <div class="big"><span>${fmtRate(plan.targetRate)}</span> ${CARGO[plan.targetCargo].name} / year</div>
+    <div class="side">to the town &nbsp;·&nbsp; ${fmtDay(plan.targetRate)} / day &nbsp;·&nbsp;
+      ${plan.lines.length} line${plan.lines.length === 1 ? "" : "s"} to ship</div>`;
+
+  const groups = groupLines(plan.lines);
+  el("tiers").innerHTML = TIERS.map((tier, i) => {
+    const rows = groups[i];
+    if (!rows.length) return "";
+    return `
+      <div class="tier ${tier.cls}">
+        <div class="tier-head">
+          <span class="dot"></span>
+          <span class="title">${tier.title}</span>
+          <span class="hint">${tier.hint}</span>
+          <span class="count">${rows.length} line${rows.length === 1 ? "" : "s"}</span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>From</th><th></th><th>To</th><th>Cargo</th><th class="num">Rate /year</th><th class="num">Rate /day</th></tr>
+          </thead>
+          <tbody>${rows.map(lineRow).join("")}</tbody>
+        </table>
+      </div>`;
+  }).join("");
+
+  const sBlock = el("surplus-block");
+  sBlock.hidden = plan.surplus.length === 0;
+  el("surplus-count").textContent = plan.surplus.length + " item" + (plan.surplus.length === 1 ? "" : "s");
+  el("surplus").innerHTML = plan.surplus.map(s => `
+    <tr>
+      <td>${nameOf(s.src)}</td>
+      <td><span class="cargo-cell"><span class="cat">${CARGO[s.cargo].category}</span>${CARGO[s.cargo].name}</span></td>
+      <td class="num">${fmtRate(s.rate)}</td>
+      <td class="num">${fmtDay(s.rate)}</td>
+    </tr>`).join("");
+
+  el("notes").innerHTML = plan.notes.map(n => `Note: ${n}`).join("<br>");
+  el("result").hidden = false;
+}
+
+function calculate() {
+  const targetCargo = el("cargo").value;
+  const raw = Number(el("rate").value);
+  if (!(raw > 0)) {
+    alert("Enter a demand greater than 0.");
+    return;
+  }
+  const rate = el("unit").value === "day" ? raw * DAYS_PER_YEAR : raw;
+  try {
+    renderPlan(computePlan(targetCargo, rate, readChoices(targetCargo)));
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function fillReference() {
+  el("recipes").innerHTML = Object.keys(INDUSTRY).sort((a, b) =>
+    INDUSTRY[a].name.localeCompare(INDUSTRY[b].name)).map(id => {
+      const ind = INDUSTRY[id];
+      let text;
+      if (ind.kind === "raw") {
+        text = Object.entries(ind.outputs).map(([c, r]) => `${r[0]}-${r[2]} ${CARGO[c].name}`).join(" + ") + " /year";
+      } else {
+        text = ind.recipes.map(r => {
+          const left = Object.entries(r.inputs).map(([c, q]) => `${q} ${CARGO[c].name}`).join(" + ");
+          const right = Object.entries(r.outputs).map(([c, q]) => `${q} ${CARGO[c].name}`).join(" + ");
+          return `${left} → ${right}`;
+        }).join("  OR  ");
+      }
+      if (ind.booster) text += `  [booster: ${CARGO[ind.booster].name}]`;
+      return `<li><b>${ind.name}</b> ${text}</li>`;
+    }).join("");
+
+  const order = { End: 0, Intermediate: 1, Raw: 2, Booster: 3 };
+  el("cargos").innerHTML = Object.keys(CARGO).sort((a, b) =>
+    order[CARGO[a].klass] - order[CARGO[b].klass] ||
+    CARGO[a].name.localeCompare(CARGO[b].name)).map(id => {
+      const meta = CARGO[id];
+      const producers = producersOf(id).map(p => INDUSTRY[p].name).join(", ");
+      return `<li><b>${meta.name}</b> <span class="tag">${meta.klass}</span><span class="tag">${meta.category}</span> by: ${producers}</li>`;
+    }).join("");
+}
+
+fillCargoSelect();
+fillReference();
+el("calc").addEventListener("click", calculate);
+el("cargo").addEventListener("change", () => {
+  renderChoices(el("cargo").value);
+  el("result").hidden = true;
+});
+renderChoices(el("cargo").value);
+</script>
+</body>
+</html>
