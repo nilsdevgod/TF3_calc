@@ -44,11 +44,17 @@ class Plan:
     surpluses: list = field(default_factory=list)
     notes: list = field(default_factory=list)
     cycles: dict = field(default_factory=dict)   # ind -> cycles per year (processors)
-    producers: dict = field(default_factory=dict)  # cargo -> ind
+    producers: dict = field(default_factory=dict)  # cargo -> [(ind, share)]
 
 
 class ChoiceError(Exception):
     pass
+
+
+@dataclass
+class RateAnchor:
+    ind_id: str       # industry whose one-plant rate is given
+    rate: float       # items per year from one plant of ind_id
 
 
 class AutoChooser:
@@ -65,7 +71,7 @@ class AutoChooser:
         if len(options) == 1:
             return options[0]
         pick = self.producer_picks.get(cargo_id)
-        if pick not in options:
+        if pick is None:
             raise ChoiceError(f"Producer choice needed for {CARGO[cargo_id]['name']}: {options}")
         return pick
 
@@ -103,6 +109,106 @@ def _all_inputs(ind, mix):
     return ins
 
 
+def anchor_input(ind, recipe_index):
+    """The input cargo that distinguishes this recipe from the alternatives."""
+    other = set()
+    for j, recipe in enumerate(ind["recipes"]):
+        if j != recipe_index:
+            other.update(recipe["inputs"])
+    distinct = sorted(c for c in ind["recipes"][recipe_index]["inputs"] if c not in other)
+    if len(distinct) != 1:
+        raise ChoiceError("Cannot derive a rate anchor for this recipe")
+    return distinct[0]
+
+
+def mix_from_anchor(ind, anchor_index, anchor_cargo, anchor_rate, output_demand):
+    """Mix shares from a one-plant rate anchor.
+
+    The anchor recipe consumes anchor_rate items/year of anchor_cargo and the
+    remaining recipes cover the rest of output_demand (items/year of the
+    industry's output). Every recipe must yield the same single output per
+    cycle (the Canning Factory does).
+    """
+    recipes = ind["recipes"]
+    if not 0 <= anchor_index < len(recipes):
+        raise ChoiceError("Unknown recipe index")
+    if output_demand <= 0:
+        raise ChoiceError("Demand must be greater than zero")
+    if anchor_rate < 0:
+        raise ChoiceError("Plant rate must not be negative")
+    anchor = recipes[anchor_index]
+    in_qty = anchor["inputs"].get(anchor_cargo, 0)
+    if in_qty <= 0:
+        raise ChoiceError(f"{CARGO[anchor_cargo]['name']} is not an input of that recipe")
+    if len(anchor["outputs"]) != 1:
+        raise ChoiceError("Rate-anchored mixes need recipes with a single output")
+    out_cargo, out_qty = next(iter(anchor["outputs"].items()))
+    for recipe in recipes:
+        if recipe["outputs"] != {out_cargo: out_qty}:
+            raise ChoiceError("Rate-anchored mixes need every recipe to yield the same output")
+    share = anchor_rate * out_qty / (in_qty * output_demand)
+    share = min(1.0, max(0.0, share))
+    shares = [0.0] * len(recipes)
+    shares[anchor_index] = share
+    others = [i for i in range(len(recipes)) if i != anchor_index]
+    if others:
+        rest = (1.0 - share) / len(others)
+        for i in others:
+            shares[i] = rest
+    else:
+        shares[anchor_index] = 1.0
+    return [(i, s) for i, s in enumerate(shares) if s > EPS]
+
+
+def source_inds(cargo_id, choice):
+    """Every industry that may supply this cargo under a producer choice."""
+    if isinstance(choice, RateAnchor):
+        options = producers_of(cargo_id)
+        if choice.ind_id not in options:
+            raise ChoiceError(
+                f"{INDUSTRY[choice.ind_id]['name']} does not produce {CARGO[cargo_id]['name']}"
+            )
+        return options
+    ids = [choice] if isinstance(choice, str) else [ind_id for ind_id, _share in choice]
+    for ind_id in ids:
+        if ind_id not in producers_of(cargo_id):
+            raise ChoiceError(
+                f"{INDUSTRY[ind_id]['name']} does not produce {CARGO[cargo_id]['name']}"
+            )
+    return ids
+
+
+def resolve_sources(cargo_id, choice, demand_rate):
+    """Concrete [(ind_id, share)] (sums to 1) for a producer choice.
+
+    A RateAnchor supplies at most one plant's rate and the other producers
+    share the remainder. Explicit share lists are normalised to sum to 1.
+    """
+    ids = source_inds(cargo_id, choice)
+    if isinstance(choice, str):
+        return [(choice, 1.0)]
+    if isinstance(choice, RateAnchor):
+        others = [i for i in ids if i != choice.ind_id]
+        if not others:
+            return [(choice.ind_id, 1.0)]
+        if demand_rate <= 0:
+            raise ChoiceError("Demand must be greater than zero")
+        if choice.rate < 0:
+            raise ChoiceError("Plant rate must not be negative")
+        share = min(1.0, choice.rate / demand_rate)
+        if share >= 1.0:
+            return [(choice.ind_id, 1.0)]
+        if share <= EPS:
+            return [(i, 1.0 / len(others)) for i in others]
+        rest = (1.0 - share) / len(others)
+        return [(choice.ind_id, share)] + [(i, rest) for i in others]
+    pairs = [(ind_id, float(weight)) for ind_id, weight in choice]
+    total = sum(weight for _, weight in pairs)
+    if total <= EPS:
+        raise ChoiceError("Producer shares must sum to a positive value")
+    return [(ind_id, weight / total) for ind_id, weight in pairs]
+
+
 def compute_plan(target_cargo, target_rate, chooser):
     if target_rate <= 0:
         raise ChoiceError("Demand must be greater than zero")
@@ -111,23 +217,24 @@ def compute_plan(target_cargo, target_rate, chooser):
     producers = {}
     mixes = {}
     discovered = set()
+    industries = set()
     queue = deque([target_cargo])
     while queue:
         cargo = queue.popleft()
         if cargo in discovered:
             continue
         discovered.add(cargo)
-        ind_id = chooser.choose_producer(cargo)
-        producers[cargo] = ind_id
-        ind = INDUSTRY[ind_id]
-        if ind["kind"] == "raw":
-            continue
-        if ind_id not in mixes:
-            mixes[ind_id] = chooser.choose_split(ind_id)
-        for inc in _all_inputs(ind, mixes[ind_id]):
-            queue.append(inc)
-
-    industries = set(mixes) | {producers[c] for c in discovered}
+        choice = chooser.choose_producer(cargo)
+        producers[cargo] = choice
+        for ind_id in source_inds(cargo, choice):
+            industries.add(ind_id)
+            ind = INDUSTRY[ind_id]
+            if ind["kind"] == "raw":
+                continue
+            if ind_id not in mixes:
+                mixes[ind_id] = chooser.choose_split(ind_id)
+            for inc in _all_inputs(ind, mixes[ind_id]):
+                queue.append(inc)
 
     # ---- topological order: consumers before the producers of their inputs ----
     indegree = defaultdict(int)
@@ -137,12 +244,12 @@ def compute_plan(target_cargo, target_rate, chooser):
     for ind_id, mix in mixes.items():
         ind = INDUSTRY[ind_id]
         for inc in _all_inputs(ind, mix):
-            prod = producers[inc]
-            if prod == ind_id:
-                continue
-            if prod not in dependents[ind_id]:
-                dependents[ind_id].add(prod)
-                indegree[prod] += 1
+            for prod in source_inds(inc, producers[inc]):
+                if prod == ind_id:
+                    continue
+                if prod not in dependents[ind_id]:
+                    dependents[ind_id].add(prod)
+                    indegree[prod] += 1
 
     ready = sorted(i for i in industries if indegree[i] == 0)
     order = []
@@ -160,10 +267,27 @@ def compute_plan(target_cargo, target_rate, chooser):
     # ---- scale industries, aggregate demands, build flows ----
     demand = defaultdict(float)
     demand[target_cargo] = target_rate
-    lines = []
+    resolved = {}                      # cargo -> [(ind_id, share)]
+    assigned = defaultdict(float)      # (ind_id, cargo) -> items/year it supplies
+    requests = [("town", target_cargo, target_rate)]   # (consumer, cargo, rate)
     surpluses = []
     notes = []
     cycles = {}
+
+    def sources_of(cargo):
+        # consumers are ordered before the producers of their inputs, so the
+        # demand is final the first time a cargo's sources are resolved
+        if cargo not in resolved:
+            resolved[cargo] = resolve_sources(cargo, producers[cargo], demand[cargo])
+            for ind_id, share in resolved[cargo]:
+                assigned[(ind_id, cargo)] = demand[cargo] * share
+        return resolved[cargo]
+
+    def portion_of(ind_id, cargo):
+        if demand[cargo] <= EPS:
+            return 0.0
+        sources_of(cargo)
+        return assigned.get((ind_id, cargo), 0.0)
 
     for ind_id in order:
         ind = INDUSTRY[ind_id]
@@ -171,17 +295,21 @@ def compute_plan(target_cargo, target_rate, chooser):
             continue
         mix = mixes[ind_id]
 
-        # enough cycles to cover every demanded output (coupled outputs net out)
+        # enough cycles to cover this industry's share of every demanded output
+        # (coupled outputs net out; zero-share branches stay idle)
         total_cycles = 0.0
         for out_cargo in _all_outputs(ind, mix):
             rate_per_cycle = _out_rate(ind, mix, out_cargo)
-            if rate_per_cycle > 0 and demand[out_cargo] > 0:
-                total_cycles = max(total_cycles, demand[out_cargo] / rate_per_cycle)
+            if rate_per_cycle <= 0:
+                continue
+            portion = portion_of(ind_id, out_cargo)
+            if portion > EPS:
+                total_cycles = max(total_cycles, portion / rate_per_cycle)
         cycles[ind_id] = total_cycles
 
         for out_cargo in sorted(_all_outputs(ind, mix)):
             produced = _out_rate(ind, mix, out_cargo) * total_cycles
-            leftover = produced - demand[out_cargo]
+            leftover = produced - portion_of(ind_id, out_cargo)
             if leftover > EPS:
                 surpluses.append(Surplus(ind_id, out_cargo, leftover))
 
@@ -189,16 +317,23 @@ def compute_plan(target_cargo, target_rate, chooser):
             rate = _in_rate(ind, mix, inc) * total_cycles
             if rate <= EPS:
                 continue
-            lines.append(Flow(producers[inc], ind_id, inc, rate))
+            requests.append((ind_id, inc, rate))
             demand[inc] += rate
 
-    # the delivery line into the town
-    lines.append(Flow(producers[target_cargo], "town", target_cargo, target_rate))
+    # one line per source: a split supply shows up as several lines
+    lines = []
+    for consumer, cargo, rate in requests:
+        for ind_id, share in sources_of(cargo):
+            if share <= EPS:
+                continue
+            lines.append(Flow(ind_id, consumer, cargo, rate * share))
 
     # raw industries: report undemanded side outputs (plot-dependent ranges)
     for ind_id in sorted(industries):
         ind = INDUSTRY[ind_id]
         if ind["kind"] != "raw":
+            continue
+        if not any(portion_of(ind_id, out_cargo) > EPS for out_cargo in ind["outputs"]):
             continue
         for out_cargo, (lo, _typ, hi) in sorted(ind["outputs"].items()):
             if demand[out_cargo] <= EPS:
@@ -218,7 +353,7 @@ def compute_plan(target_cargo, target_rate, chooser):
         surpluses=surpluses,
         notes=notes,
         cycles=cycles,
-        producers=producers,
+        producers=dict(resolved),
     )
 
 
@@ -309,5 +444,67 @@ if __name__ == "__main__":
     for s in p.surpluses:
         surplus[s.cargo] += s.rate
     assert abs(surplus["steel"] - 20) < 1e-9
+
+    # rate-anchored recipe mix: one Fishing Grounds supplies 6 fish of 100 canned food
+    canning = INDUSTRY["canning_factory"]
+    assert anchor_input(canning, 0) == "fish"
+    assert anchor_input(canning, 1) == "meat"
+    mix = mix_from_anchor(canning, 0, "fish", 6, 100)
+    assert [i for i, _ in mix] == [0, 1]
+    assert abs(dict(mix)[0] - 0.06) < 1e-9
+    assert abs(dict(mix)[1] - 0.94) < 1e-9
+    mix = mix_from_anchor(canning, 1, "meat", 25, 100)
+    assert abs(dict(mix)[0] - 0.75) < 1e-9
+    assert abs(dict(mix)[1] - 0.25) < 1e-9
+    assert mix_from_anchor(canning, 0, "fish", 150, 100) == [(0, 1.0)]
+    assert mix_from_anchor(canning, 1, "meat", 100, 100) == [(1, 1.0)]
+    assert mix_from_anchor(canning, 0, "fish", 0, 100) == [(1, 1.0)]
+
+    p = compute_plan(
+        "canned_food", 100,
+        AutoChooser(split_picks={"canning_factory": mix_from_anchor(canning, 0, "fish", 6, 100)}),
+    )
+    rates = {(f.src, f.dst, f.cargo): f.rate for f in p.lines}
+    assert rates[("fishing_grounds", "canning_factory", "fish")] == 6
+    assert rates[("livestock_farm", "canning_factory", "meat")] == 94
+    assert rates[("steel_mill", "canning_factory", "sheet_metal")] == 50
+    assert rates[("iron_ore_mine", "steel_mill", "iron_ore")] == 75
+    assert rates[("coal_mine", "steel_mill", "coal")] == 75
+    surplus = {s.cargo: s.rate for s in p.surpluses}
+    assert surplus["steel"] == 37.5
+
+    # rate-anchored producer splits
+    shares = resolve_sources("crude_oil", RateAnchor("oil_platform", 4.0), 20)
+    assert len(shares) == 2
+    assert abs(shares[0][1] - 0.2) < 1e-9
+    assert abs(shares[1][1] - 0.8) < 1e-9
+    assert resolve_sources("crude_oil", RateAnchor("oil_platform", 40.0), 20) == [("oil_platform", 1.0)]
+    assert resolve_sources("crude_oil", "oil_well", 20) == [("oil_well", 1.0)]
+    assert resolve_sources("crude_oil", [("oil_well", 1), ("oil_platform", 3)], 20) == [
+        ("oil_well", 0.25), ("oil_platform", 0.75),
+    ]
+
+    p = compute_plan(
+        "vehicles", 10,
+        AutoChooser(producer_picks={"crude_oil": RateAnchor("oil_platform", 4.0)}),
+    )
+    rates = {(f.src, f.dst, f.cargo): f.rate for f in p.lines}
+    assert rates[("oil_platform", "oil_refinery", "crude_oil")] == 4
+    assert abs(rates[("oil_well", "oil_refinery", "crude_oil")] - 20 / 7) < 1e-9
+
+    # Wool from one Livestock Farm at most: the rest comes from Cotton Farms
+    p = compute_plan(
+        "clothes", 20,
+        AutoChooser(producer_picks={
+            "wool": RateAnchor("livestock_farm", 4.0),
+            "crude_oil": "oil_well",
+        }),
+    )
+    rates = {(f.src, f.dst, f.cargo): f.rate for f in p.lines}
+    assert rates[("livestock_farm", "weaving_mill", "wool")] == 4
+    assert abs(rates[("cotton_farm", "weaving_mill", "wool")] - 68 / 3) < 1e-9
+    assert rates[("crop_farm", "livestock_farm", "grain")] == 7
+    surplus = {s.cargo: s.rate for s in p.surpluses}
+    assert surplus["meat"] == 3
 
     print("chain.py self-checks passed")

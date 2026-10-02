@@ -12,7 +12,7 @@ Workflow:
 
 1. Enter the town's demand (e.g. `100` Meat per year, or per day).
 2. Pick the cargo to deliver.
-3. Answer the branch questions where chains fork (e.g. Canned Food from fish, meat, or a mix).
+3. Answer the branch questions where chains fork. A mix is set by **one plant's rate** instead of a percentage — e.g. "one Fishing Grounds supplies 6 Fish/year" for the Canning Factory, and the Meat line covers the rest. The same works where a cargo has several sources (Crude Oil, Sand, Wool).
 4. Get the rate to ship on every line, grouped by tier:
 
 | Tier | What it carries | Example (clothes chain) |

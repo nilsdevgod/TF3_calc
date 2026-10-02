@@ -12,10 +12,14 @@ from data import CARGO, INDUSTRY, producers_of, recipe_text
 from chain import (
     AutoChooser,
     ChoiceError,
+    RateAnchor,
+    anchor_input,
     compute_plan,
     format_plan,
+    mix_from_anchor,
     name_of,
     fmt_rate,
+    fmt_day,
     DAYS_PER_YEAR,
 )
 
@@ -84,16 +88,43 @@ def pick_cargo(prompt):
 
 
 class InteractiveChooser:
+    def __init__(self, target_rate, per_day=False):
+        self.target_rate = target_rate   # town demand, items per year
+        self.per_day = per_day           # the user thinks in items per day
+
+    def unit(self):
+        return "day" if self.per_day else "year"
+
+    def to_year(self, value):
+        return value * DAYS_PER_YEAR if self.per_day else value
+
+    def show(self, rate):
+        return fmt_day(rate) if self.per_day else fmt_rate(rate)
+
+    def plant_name(self, cargo_id):
+        plants = producers_of(cargo_id)
+        return INDUSTRY[plants[0]]["name"] if len(plants) == 1 else "plant"
+
     def choose_producer(self, cargo_id):
         options = producers_of(cargo_id)
         if not options:
             raise ChoiceError(f"No industry produces {CARGO[cargo_id]['name']}")
         if len(options) == 1:
             return options[0]
-        return ask_choice(
+        choice = ask_choice(
             f"Which industry provides {CARGO[cargo_id]['name']}?",
-            [(INDUSTRY[i]["name"], i) for i in options],
+            [(INDUSTRY[i]["name"], i) for i in options] + [("Mix (one plant's rate)", "mix")],
         )
+        if choice != "mix":
+            return choice
+        anchor = ask_choice(
+            "Which plant's rate do you know?",
+            [(f"One {INDUSTRY[i]['name']}", i) for i in options],
+        )
+        rate = ask_float(
+            f"Max {CARGO[cargo_id]['name']} per {self.unit()} from one {INDUSTRY[anchor]['name']}"
+        )
+        return RateAnchor(anchor, self.to_year(rate))
 
     def choose_split(self, industry_id):
         ind = INDUSTRY[industry_id]
@@ -102,19 +133,31 @@ class InteractiveChooser:
         labels = [r.get("label", f"Recipe {i + 1}") for i, r in enumerate(ind["recipes"])]
         choice = ask_choice(
             f"{ind['name']} recipe (inputs are alternatives):",
-            [(labels[i], i) for i in range(len(labels))] + [("Mix (enter share)", "mix")],
+            [(labels[i], i) for i in range(len(labels))] + [("Mix (one plant's rate)", "mix")],
         )
         if choice != "mix":
             return [(choice, 1.0)]
-        share = ask_int(
-            f"Share of output made with {labels[0]} in percent",
-            0, 100, 50,
-        ) / 100.0
-        if share <= 0:
-            return [(1, 1.0)]
-        if share >= 1:
-            return [(0, 1.0)]
-        return [(0, share), (1, 1.0 - share)]
+        anchors = [anchor_input(ind, i) for i in range(len(ind["recipes"]))]
+        pick = ask_choice(
+            "Which plant's rate do you know?",
+            [
+                (f"One {self.plant_name(anchors[i])} ({CARGO[anchors[i]]['name']})", i)
+                for i in range(len(anchors))
+            ],
+        )
+        rate = ask_float(
+            f"Max {CARGO[anchors[pick]]['name']} per {self.unit()} "
+            f"from one {self.plant_name(anchors[pick])}"
+        )
+        mix = mix_from_anchor(ind, pick, anchors[pick], self.to_year(rate), self.target_rate)
+        out_qty = next(iter(ind["recipes"][0]["outputs"].values()))
+        cycles = self.target_rate / out_qty
+        parts = []
+        for i, share in mix:
+            rate_i = share * ind["recipes"][i]["inputs"][anchors[i]] * cycles
+            parts.append(f"{labels[i]} {self.show(rate_i)}")
+        print(f"  Split: {' + '.join(parts)} per {self.unit()}")
+        return mix
 
 
 def prompt_demand():
@@ -126,7 +169,7 @@ def prompt_demand():
         rate = rate_day * DAYS_PER_YEAR
     else:
         rate = ask_float(f"Demand for {CARGO[cargo_id]['name']} per year")
-    return cargo_id, rate
+    return cargo_id, rate, per_day
 
 
 def save_report(plan):
@@ -153,8 +196,8 @@ def show_browse():
 
 def new_calculation():
     try:
-        cargo_id, rate = prompt_demand()
-        plan = compute_plan(cargo_id, rate, InteractiveChooser())
+        cargo_id, rate, per_day = prompt_demand()
+        plan = compute_plan(cargo_id, rate, InteractiveChooser(rate, per_day))
     except ChoiceError as exc:
         print(f"Cannot compute: {exc}")
         return

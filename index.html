@@ -391,6 +391,89 @@ function producersOf(cargoId) {
   return out.sort();
 }
 
+/* ---------------- rate anchors ----------------
+   A producer choice is an indId, [[indId, share], ...], or {anchor, rate}
+   meaning "anchor industry at one plant's rate; the other producers cover
+   the remainder of the demand".
+------------------------------------------------ */
+
+function isAnchor(choice) {
+  return !!choice && typeof choice === "object" && !Array.isArray(choice);
+}
+
+function anchorInput(ind, recipeIndex) {
+  const other = new Set();
+  ind.recipes.forEach((r, j) => {
+    if (j !== recipeIndex) for (const k of Object.keys(r.inputs)) other.add(k);
+  });
+  const distinct = Object.keys(ind.recipes[recipeIndex].inputs).filter(c => !other.has(c)).sort();
+  if (distinct.length !== 1) throw new Error("Cannot derive a rate anchor for this recipe");
+  return distinct[0];
+}
+
+function mixFromAnchor(ind, anchorIndex, anchorCargo, anchorRate, outputDemand) {
+  const recipes = ind.recipes;
+  if (anchorIndex < 0 || anchorIndex >= recipes.length) throw new Error("Unknown recipe index");
+  if (!(outputDemand > 0)) throw new Error("Demand must be greater than zero");
+  if (anchorRate < 0) throw new Error("Plant rate must not be negative");
+  const anchor = recipes[anchorIndex];
+  const inQty = anchor.inputs[anchorCargo] || 0;
+  if (!(inQty > 0)) throw new Error(CARGO[anchorCargo].name + " is not an input of that recipe");
+  const outKeys = Object.keys(anchor.outputs);
+  if (outKeys.length !== 1) throw new Error("Rate-anchored mixes need recipes with a single output");
+  const outQty = anchor.outputs[outKeys[0]];
+  for (const r of recipes) {
+    const rk = Object.keys(r.outputs);
+    if (rk.length !== 1 || rk[0] !== outKeys[0] || r.outputs[rk[0]] !== outQty) {
+      throw new Error("Rate-anchored mixes need every recipe to yield the same output");
+    }
+  }
+  const share = Math.min(1, Math.max(0, anchorRate * outQty / (inQty * outputDemand)));
+  const shares = recipes.map((_, i) => (i === anchorIndex ? share : 0));
+  const others = recipes.map((_, i) => i).filter(i => i !== anchorIndex);
+  if (others.length) {
+    const rest = (1 - share) / others.length;
+    for (const i of others) shares[i] = rest;
+  } else {
+    shares[anchorIndex] = 1;
+  }
+  return shares.map((s, i) => [i, s]).filter(([, s]) => s > EPS);
+}
+
+function sourceInds(cargoId, choice) {
+  const options = producersOf(cargoId);
+  const bad = id => {
+    if (!options.includes(id)) throw new Error(INDUSTRY[id].name + " does not produce " + CARGO[cargoId].name);
+  };
+  if (isAnchor(choice)) {
+    bad(choice.anchor);
+    return options;
+  }
+  const ids = typeof choice === "string" ? [choice] : choice.map(([ind]) => ind);
+  ids.forEach(bad);
+  return ids;
+}
+
+function resolveSources(cargoId, choice, demandRate) {
+  const ids = sourceInds(cargoId, choice);
+  if (typeof choice === "string") return [[choice, 1.0]];
+  if (isAnchor(choice)) {
+    const others = ids.filter(i => i !== choice.anchor);
+    if (!others.length) return [[choice.anchor, 1.0]];
+    if (!(demandRate > 0)) throw new Error("Demand must be greater than zero");
+    if (choice.rate < 0) throw new Error("Plant rate must not be negative");
+    const share = Math.min(1, choice.rate / demandRate);
+    if (share >= 1) return [[choice.anchor, 1.0]];
+    if (share <= EPS) return others.map(i => [i, 1 / others.length]);
+    const rest = (1 - share) / others.length;
+    return [[choice.anchor, share], ...others.map(i => [i, rest])];
+  }
+  const pairs = choice.map(([ind, w]) => [ind, Number(w)]);
+  const total = pairs.reduce((s, [, w]) => s + w, 0);
+  if (!(total > EPS)) throw new Error("Producer shares must sum to a positive value");
+  return pairs.map(([ind, w]) => [ind, w / total]);
+}
+
 function nameOf(node) { return node === "town" ? "Town" : INDUSTRY[node].name; }
 function fmtRate(n) {
   return Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : n.toFixed(1);
@@ -427,7 +510,7 @@ function discoverChoices(targetCargo) {
 
 /* ---------------- the plan engine ----------------
    choices = {
-     producer: { cargoId: indId },
+     producer: { cargoId: indId | [[indId, share], ...] | {anchor, rate} },
      split:    { indId: [[recipeIndex, share], ...] },   // shares sum to 1
    }
 --------------------------------------------------- */
@@ -439,6 +522,7 @@ function computePlan(targetCargo, targetRate, choices) {
   // discovery with resolved choices (walks only the chosen branches)
   const producers = {};
   const mixes = {};
+  const industries = new Set();
   const seen = new Set();
   const queue = [targetCargo];
   while (queue.length) {
@@ -447,30 +531,30 @@ function computePlan(targetCargo, targetRate, choices) {
     seen.add(c);
     const opts = producersOf(c);
     if (!opts.length) throw new Error("No industry produces " + CARGO[c].name);
-    const indId = opts.length === 1 ? opts[0] : (producerPick[c] || opts[0]);
     if (opts.length > 1 && !producerPick[c]) {
       throw new Error("Producer choice needed for " + CARGO[c].name);
     }
-    producers[c] = indId;
-    const ind = INDUSTRY[indId];
-    if (ind.kind === "raw") continue;
-    if (!(indId in mixes)) {
-      if (ind.supports_split) {
-        const mix = splitPick[indId];
-        if (!mix) throw new Error("Recipe choice needed for " + ind.name);
-        mixes[indId] = mix;
-      } else {
-        mixes[indId] = [[0, 1.0]];
+    const choice = opts.length === 1 ? opts[0] : producerPick[c];
+    producers[c] = choice;
+    for (const indId of sourceInds(c, choice)) {
+      industries.add(indId);
+      const ind = INDUSTRY[indId];
+      if (ind.kind === "raw") continue;
+      if (!(indId in mixes)) {
+        if (ind.supports_split) {
+          const mix = splitPick[indId];
+          if (!mix) throw new Error("Recipe choice needed for " + ind.name);
+          mixes[indId] = mix;
+        } else {
+          mixes[indId] = [[0, 1.0]];
+        }
+      }
+      for (const [i, share] of mixes[indId]) {
+        if (share <= 0) continue;
+        for (const inc of Object.keys(ind.recipes[i].inputs)) queue.push(inc);
       }
     }
-    for (const [i, share] of mixes[indId]) {
-      if (share <= 0) continue;
-      for (const inc of Object.keys(ind.recipes[i].inputs)) queue.push(inc);
-    }
   }
-
-  const industries = new Set(Object.keys(mixes));
-  for (const c of seen) industries.add(producers[c]);
 
   // topological order: consumers before the producers of their inputs
   const indegree = {};
@@ -483,10 +567,11 @@ function computePlan(targetCargo, targetRate, choices) {
       if (share > 0) for (const inc of Object.keys(ind.recipes[i].inputs)) ins.add(inc);
     }
     for (const inc of ins) {
-      const prod = producers[inc];
-      if (prod === indId || dependents[indId].has(prod)) continue;
-      dependents[indId].add(prod);
-      indegree[prod] += 1;
+      for (const prod of sourceInds(inc, producers[inc])) {
+        if (prod === indId || dependents[indId].has(prod)) continue;
+        dependents[indId].add(prod);
+        indegree[prod] += 1;
+      }
     }
   }
   const ready = [...industries].filter(i => indegree[i] === 0).sort();
@@ -526,42 +611,74 @@ function computePlan(targetCargo, targetRate, choices) {
 
   const demand = {};
   demand[targetCargo] = targetRate;
-  const lines = [];
+  const resolved = {};    // cargo -> [[indId, share]]
+  const assigned = {};    // indId -> {cargo: items/year this industry supplies}
+  const requests = [["town", targetCargo, targetRate]];   // (consumer, cargo, rate)
   const surplus = [];
   const notes = [];
+
+  const sourcesOf = (cargo) => {
+    // consumers are ordered before the producers of their inputs, so the
+    // demand is final the first time a cargo's sources are resolved
+    if (!(cargo in resolved)) {
+      resolved[cargo] = resolveSources(cargo, producers[cargo], demand[cargo] || 0);
+      for (const [indId, share] of resolved[cargo]) {
+        assigned[indId] = assigned[indId] || {};
+        assigned[indId][cargo] = (demand[cargo] || 0) * share;
+      }
+    }
+    return resolved[cargo];
+  };
+  const portionOf = (indId, cargo) => {
+    if ((demand[cargo] || 0) <= EPS) return 0;
+    sourcesOf(cargo);
+    return (assigned[indId] && assigned[indId][cargo]) || 0;
+  };
 
   for (const indId of order) {
     const ind = INDUSTRY[indId];
     if (ind.kind === "raw") continue;
     const mix = mixes[indId];
 
+    // enough cycles to cover this industry's share of every demanded output
+    // (coupled outputs net out; zero-share branches stay idle)
     let cycles = 0;
     for (const outC of outputsOf(ind, mix)) {
       const per = outRate(ind, mix, outC);
-      if (per > 0 && (demand[outC] || 0) > 0) {
-        cycles = Math.max(cycles, demand[outC] / per);
-      }
+      if (per <= 0) continue;
+      const portion = portionOf(indId, outC);
+      if (portion > EPS) cycles = Math.max(cycles, portion / per);
     }
 
     for (const outC of [...outputsOf(ind, mix)].sort()) {
       const produced = outRate(ind, mix, outC) * cycles;
-      const leftover = produced - (demand[outC] || 0);
+      const leftover = produced - portionOf(indId, outC);
       if (leftover > EPS) surplus.push({ src: indId, cargo: outC, rate: leftover });
     }
 
     for (const inc of [...inputsOf(ind, mix)].sort()) {
       const rate = inRate(ind, mix, inc) * cycles;
       if (rate <= EPS) continue;
-      lines.push({ src: producers[inc], dst: indId, cargo: inc, rate });
+      requests.push([indId, inc, rate]);
       demand[inc] = (demand[inc] || 0) + rate;
     }
   }
 
-  lines.push({ src: producers[targetCargo], dst: "town", cargo: targetCargo, rate: targetRate });
+  // one line per source: a split supply shows up as several lines
+  const lines = [];
+  for (const [consumer, cargo, rate] of requests) {
+    for (const [indId, share] of sourcesOf(cargo)) {
+      if (share <= EPS) continue;
+      lines.push({ src: indId, dst: consumer, cargo, rate: rate * share });
+    }
+  }
 
+  // raw industries: undemanded side outputs of the sources that do supply
   for (const indId of [...industries].sort()) {
     const ind = INDUSTRY[indId];
     if (ind.kind !== "raw") continue;
+    const supplies = Object.keys(ind.outputs).some(c => portionOf(indId, c) > EPS);
+    if (!supplies) continue;
     for (const [outC, range] of Object.entries(ind.outputs)) {
       if ((demand[outC] || 0) <= EPS) {
         notes.push(`${ind.name} also yields ${CARGO[outC].name} at ${range[0]}-${range[2]}/year (plot-dependent)`);
@@ -636,68 +753,195 @@ function recalcIfVisible() {
   if (!el("result").hidden) calculate();
 }
 
+function plantNameOf(cargoId) {
+  const plants = producersOf(cargoId);
+  return plants.length === 1 ? INDUSTRY[plants[0]].name : "plant";
+}
+
+function updateUnitWords() {
+  const word = el("unit").value === "day" ? "day" : "year";
+  document.querySelectorAll(".unit-word").forEach(span => { span.textContent = word; });
+}
+
+function demandYear() {
+  const raw = Number(el("rate").value);
+  if (!(raw > 0)) return 0;
+  return el("unit").value === "day" ? raw * DAYS_PER_YEAR : raw;
+}
+
+function evenMix(ind) {
+  const n = ind.recipes.length;
+  return ind.recipes.map((_, i) => [i, 1 / n]);
+}
+
+function readSplitMix(ind, indId, outputDemand) {
+  const anchors = ind.recipes.map((_, i) => anchorInput(ind, i));
+  const picked = document.querySelector(`input[name="split_anchor_${indId}"]:checked`);
+  const anchorIdx = picked ? Number(picked.value) : 0;
+  const raw = el(`split_rate_${indId}`).value.trim();
+  if (raw === "") return evenMix(ind);
+  let rate = Number(raw);
+  if (!isFinite(rate) || rate < 0) return evenMix(ind);
+  if (el("unit").value === "day") rate *= DAYS_PER_YEAR;
+  return mixFromAnchor(ind, anchorIdx, anchors[anchorIdx], rate, outputDemand);
+}
+
+let splitIndustries = [];
+
+function updateMixHints() {
+  const demand = demandYear();
+  const per = el("unit").value === "day" ? "day" : "year";
+  for (const [indId, ind] of splitIndustries) {
+    const hint = el(`mix_hint_${indId}`);
+    const box = el(`mix_box_${indId}`);
+    if (!hint || !box) continue;
+    if (box.hidden || !(demand > 0)) { hint.textContent = ""; continue; }
+    try {
+      const mix = readSplitMix(ind, indId, demand);
+      const anchors = ind.recipes.map((_, i) => anchorInput(ind, i));
+      const outQty = Object.values(ind.recipes[0].outputs)[0];
+      const cycles = demand / outQty;
+      const parts = mix.map(([i, share]) => {
+        const rate = share * (ind.recipes[i].inputs[anchors[i]] || 0) * cycles;
+        const shown = per === "day" ? fmtDay(rate) : fmtRate(rate);
+        return `${CARGO[anchors[i]].name} ${shown}`;
+      });
+      hint.textContent = "\u2192 " + parts.join(" + ") + " per " + per;
+    } catch (err) {
+      hint.textContent = "";
+    }
+  }
+}
+
 function renderChoices(targetCargo) {
   const box = el("choices");
   box.innerHTML = "";
+  splitIndustries = [];
   const { producerQs, splitQs } = discoverChoices(targetCargo);
 
   for (const cargoId of producerQs) {
     const wrap = document.createElement("div");
     wrap.className = "choice";
-    const opts = producersOf(cargoId).map((indId, i) =>
+    const opts = producersOf(cargoId);
+    const radios = opts.map((indId, i) =>
       `<label class="inline"><input type="radio" name="prod_${cargoId}" value="${indId}" ${i === 0 ? "checked" : ""}> ${INDUSTRY[indId].name}</label>`
     ).join("");
-    wrap.innerHTML = `<div>Which industry provides <b>${CARGO[cargoId].name}</b>?</div><div class="opts">${opts}</div>`;
+    const anchors = opts.map((indId, i) =>
+      `<label class="inline"><input type="radio" name="prod_anchor_${cargoId}" value="${indId}" ${i === 0 ? "checked" : ""}> One ${INDUSTRY[indId].name}</label>`
+    ).join("");
+    wrap.innerHTML = `
+      <div>Which industry provides <b>${CARGO[cargoId].name}</b>?</div>
+      <div class="opts">
+        ${radios}
+        <label class="inline"><input type="radio" name="prod_${cargoId}" value="mix"> Mix (one plant's rate)</label>
+      </div>
+      <div class="opts" id="prod_mix_${cargoId}" hidden>
+        ${anchors}
+        <label class="inline">Max <b>${CARGO[cargoId].name}</b> per <span class="unit-word">year</span> from one <b id="prod_plant_${cargoId}">${INDUSTRY[opts[0]].name}</b>:
+          <input type="number" id="prod_rate_${cargoId}" min="0" step="any" placeholder="rate" style="width:80px">
+        </label>
+        <span class="muted">the other plants cover the rest</span>
+      </div>`;
     box.appendChild(wrap);
     wrap.querySelectorAll(`input[name="prod_${cargoId}"]`).forEach(radio => {
-      radio.addEventListener("change", recalcIfVisible);
+      radio.addEventListener("change", () => {
+        el(`prod_mix_${cargoId}`).hidden = radio.value !== "mix";
+        recalcIfVisible();
+      });
     });
+    wrap.querySelectorAll(`input[name="prod_anchor_${cargoId}"]`).forEach(radio => {
+      radio.addEventListener("change", () => {
+        el(`prod_plant_${cargoId}`).textContent = INDUSTRY[radio.value].name;
+        recalcIfVisible();
+      });
+    });
+    wrap.querySelector(`#prod_rate_${cargoId}`).addEventListener("input", recalcIfVisible);
   }
 
   for (const indId of splitQs) {
     const ind = INDUSTRY[indId];
+    splitIndustries.push([indId, ind]);
     const wrap = document.createElement("div");
     wrap.className = "choice";
     const labels = ind.recipes.map((r, i) => r.label || ("Recipe " + (i + 1)));
+    const anchors = ind.recipes.map((_, i) => anchorInput(ind, i));
     const radios = labels.map((lb, i) =>
       `<label class="inline"><input type="radio" name="split_${indId}" value="${i}" ${i === 0 ? "checked" : ""}> ${lb} only</label>`
+    ).join("");
+    const anchorRadios = anchors.map((cargo, i) =>
+      `<label class="inline"><input type="radio" name="split_anchor_${indId}" value="${i}" ${i === 0 ? "checked" : ""}> One ${plantNameOf(cargo)} (${CARGO[cargo].name})</label>`
     ).join("");
     wrap.innerHTML = `
       <div><b>${ind.name}</b> recipe (inputs are alternatives):</div>
       <div class="opts">
         ${radios}
-        <label class="inline"><input type="radio" name="split_${indId}" value="mix"> Mix</label>
-        <label class="inline" id="share_label_${indId}" hidden>
-          ${labels[0]} share: <input type="number" id="share_${indId}" min="0" max="100" step="5" value="50" style="width:80px"> %
+        <label class="inline"><input type="radio" name="split_${indId}" value="mix"> Mix (one plant's rate)</label>
+      </div>
+      <div class="opts" id="mix_box_${indId}" hidden>
+        ${anchorRadios}
+        <label class="inline">Max <b id="mix_cargo_${indId}">${CARGO[anchors[0]].name}</b> per <span class="unit-word">year</span> from one <b id="mix_plant_${indId}">${plantNameOf(anchors[0])}</b>:
+          <input type="number" id="split_rate_${indId}" min="0" step="any" placeholder="rate" style="width:80px">
         </label>
-      </div>`;
+      </div>
+      <div class="muted" id="mix_hint_${indId}" style="margin-top:6px"></div>`;
     box.appendChild(wrap);
     wrap.querySelectorAll(`input[name="split_${indId}"]`).forEach(radio => {
       radio.addEventListener("change", () => {
-        el(`share_label_${indId}`).hidden = radio.value !== "mix";
+        const on = radio.value === "mix" && radio.checked;
+        el(`mix_box_${indId}`).hidden = !on;
+        updateMixHints();
         recalcIfVisible();
       });
     });
-    wrap.querySelector(`#share_${indId}`).addEventListener("input", recalcIfVisible);
+    wrap.querySelectorAll(`input[name="split_anchor_${indId}"]`).forEach(radio => {
+      radio.addEventListener("change", () => {
+        const i = Number(radio.value);
+        el(`mix_cargo_${indId}`).textContent = CARGO[anchors[i]].name;
+        el(`mix_plant_${indId}`).textContent = plantNameOf(anchors[i]);
+        updateMixHints();
+        recalcIfVisible();
+      });
+    });
+    wrap.querySelector(`#split_rate_${indId}`).addEventListener("input", () => {
+      updateMixHints();
+      recalcIfVisible();
+    });
   }
+  updateUnitWords();
+  updateMixHints();
 }
 
-function readChoices(targetCargo) {
+function readChoices(targetCargo, targetRate) {
   const { producerQs, splitQs } = discoverChoices(targetCargo);
   const choices = { producer: {}, split: {} };
   for (const cargoId of producerQs) {
     const picked = document.querySelector(`input[name="prod_${cargoId}"]:checked`);
-    choices.producer[cargoId] = picked ? picked.value : producersOf(cargoId)[0];
+    const val = picked ? picked.value : "";
+    if (val === "mix") {
+      const opts = producersOf(cargoId);
+      const anchorEl = document.querySelector(`input[name="prod_anchor_${cargoId}"]:checked`);
+      const anchor = anchorEl ? anchorEl.value : opts[0];
+      const raw = el(`prod_rate_${cargoId}`).value.trim();
+      if (raw === "") {
+        choices.producer[cargoId] = opts.map(i => [i, 1 / opts.length]);
+      } else {
+        let rate = Number(raw);
+        if (!isFinite(rate) || rate < 0) {
+          throw new Error("Enter one plant's rate for " + CARGO[cargoId].name);
+        }
+        if (el("unit").value === "day") rate *= DAYS_PER_YEAR;
+        choices.producer[cargoId] = { anchor, rate };
+      }
+    } else {
+      choices.producer[cargoId] = val || producersOf(cargoId)[0];
+    }
   }
   for (const indId of splitQs) {
+    const ind = INDUSTRY[indId];
     const picked = document.querySelector(`input[name="split_${indId}"]:checked`);
     const val = picked ? picked.value : "0";
     if (val === "mix") {
-      let share = Number(el(`share_${indId}`).value) / 100;
-      share = Math.min(1, Math.max(0, share));
-      if (share <= 0) choices.split[indId] = [[1, 1.0]];
-      else if (share >= 1) choices.split[indId] = [[0, 1.0]];
-      else choices.split[indId] = [[0, share], [1, 1.0 - share]];
+      choices.split[indId] = readSplitMix(ind, indId, targetRate);
     } else {
       choices.split[indId] = [[Number(val), 1.0]];
     }
@@ -769,7 +1013,7 @@ function calculate() {
   }
   const rate = el("unit").value === "day" ? raw * DAYS_PER_YEAR : raw;
   try {
-    renderPlan(computePlan(targetCargo, rate, readChoices(targetCargo)));
+    renderPlan(computePlan(targetCargo, rate, readChoices(targetCargo, rate)));
   } catch (err) {
     alert(err.message);
   }
@@ -810,6 +1054,12 @@ el("cargo").addEventListener("change", () => {
   renderChoices(el("cargo").value);
   el("result").hidden = true;
 });
+el("unit").addEventListener("change", () => {
+  updateUnitWords();
+  updateMixHints();
+  recalcIfVisible();
+});
+el("rate").addEventListener("input", updateMixHints);
 renderChoices(el("cargo").value);
 </script>
 </body>
